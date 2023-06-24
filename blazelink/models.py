@@ -929,7 +929,7 @@ class ComputedField(Serializable):
         # filter only fields expected by __init__
         extra_args = {
             k: v for k, v in extra_args.items()
-            if k in cls.get_construct_args()
+            if k in [arg.name for arg in cls.get_construct_args()]
         }
 
         # Class extending ComputedField must implement __init__ with (self, value, [**kwargs]) signature
@@ -961,6 +961,7 @@ class Page(Generic[_PageItem], ComputedField):
         cls.set_generic_arg(_PageItem, arg)
 
     def __init__(self, value, page: int = 0, size: int = 10):
+        print("Page", page, "size", size)
         items = value[size * page:size * (page + 1)]
         self.items = items
         self.count = len(value)

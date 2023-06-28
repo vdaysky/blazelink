@@ -858,7 +858,6 @@ class ObjectId(Struct):
     def load(cls, data: dict) -> 'ObjectId':
         """ Load ObjectId from dictionary recursively, or return existing instance """
 
-        print("load object id dependenices", data.get('dependencies', []))
         deps = [
             ObjectId.load(dep) for dep in data.get('dependencies', [])
         ]

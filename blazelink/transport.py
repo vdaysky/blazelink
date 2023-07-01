@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from blazelink import schemas
+from blazelink.debugger import Debugger
 from blazelink.models import ObjectId
 from blazelink.schemas import ConfirmEvent, PingEvent, PingInEvent, AuthorizeEvent, ModelUpdateEvent, \
     IncomingEvent
@@ -27,18 +28,20 @@ class Transport:
     def get_session_id(self) -> str:
         raise NotImplementedError()
 
-    async def push_update(self, update_type: UpdateType, identifier: ObjectId):
+    async def push_update(self, update_type: UpdateType, identifier: ObjectId, update_id: int):
         raise NotImplementedError()
 
-    async def send_message(self, message: BaseModel, msg_id: int = None):
+    async def send_message(self, message: BaseModel, msg_id: int = None, blocking=True):
         raise NotImplementedError
 
 
 class StarletteTransport(Transport):
 
-    def __init__(self, websocket: WebSocket, session_id: str):
+    def __init__(self, websocket: WebSocket, session_id: str, debugger: Debugger):
         self.websocket = websocket
         self.session_id = session_id
+        self.debugger = debugger
+
         self._on_authorize_handlers = []
 
         # make sure next message is not sent before previous is confirmed
@@ -51,8 +54,11 @@ class StarletteTransport(Transport):
         self._on_authorize_handlers.append(func)
         return func
 
-    async def push_update(self, update_type: UpdateType, identifier: ObjectId):
+    async def push_update(self, update_type: UpdateType, identifier: ObjectId, update_id: int):
         print("Sending update...", update_type, identifier)
+
+        await self.debugger.message_sent(self.session_id, update_id, identifier)
+
         await self.send_message(
             ModelUpdateEvent(
                 update_type=update_type.name,

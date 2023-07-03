@@ -73,12 +73,12 @@ class Signaler:
 
                     await self.subs.push_raw_update(update)
 
-                    for _table, _pk in self.data_accessor.get_referenced_tables(table, pk):
-
-                        caused_update_id = random.randint(0, 1000000000)
-                        caused_update = Update(caused_update_id, "update", _table, _pk, {}, cause=update)
-
-                        await self.subs.push_raw_update(caused_update)
+                    # for _table, _pk in self.data_accessor.get_referenced_tables(table, pk):
+                    #
+                    #     caused_update_id = random.randint(0, 1000000000)
+                    #     caused_update = Update(caused_update_id, "update", _table, _pk, {}, cause=update)
+                    #
+                    #     await self.subs.push_raw_update(caused_update)
 
                 except Exception as e:
                     import traceback

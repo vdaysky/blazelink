@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TypeVar, Generic, List, get_args, Type, Optional, Union, Callable, Any, get_type_hints, ForwardRef, \
     Coroutine, get_origin
@@ -65,8 +66,8 @@ class BlazeField:
         self.optional = optional
 
 
-_ResolverType = Callable[['Serializable', 'BlazeProperty', 'BlazeConfig', dict[str, Any]], Coroutine[Any, Any, Any]]
-_MiddlewareType = Callable[['Serializable', Any, 'BlazeProperty', 'BlazeConfig', dict[str, Any]], Coroutine[Any, Any, Any]]
+_ResolverType = Callable[['Serializable', 'BlazeProperty', 'BlazeContext', 'BlazeConfig', dict[str, Any]], Coroutine[Any, Any, Any]]
+_MiddlewareType = Callable[['Serializable', Any, 'BlazeProperty', 'BlazeContext', 'BlazeConfig', dict[str, Any]], Coroutine[Any, Any, Any]]
 
 
 class BlazeProperty:
@@ -92,12 +93,12 @@ class BlazeProperty:
         self.name = name
 
         if resolver_middleware:
-            async def wrapped_resolver(parent: Serializable, field: BlazeProperty, config: BlazeConfig, **kwargs):
+            async def wrapped_resolver(parent: Serializable, field: BlazeProperty, context: BlazeContext, config: BlazeConfig, **kwargs):
 
-                value = await getter(parent, field, config, **kwargs)
+                value = await getter(parent, field, context, config, **kwargs)
 
                 for middleware in resolver_middleware:
-                    value = middleware(parent, value, field, config, **kwargs)
+                    value = middleware(parent, value, field, context, config, **kwargs)
                     if asyncio.iscoroutine(value):
                         value = await value
 
@@ -132,13 +133,30 @@ class DataAccessor:
         raise NotImplementedError()
 
 
+T = TypeVar("T")
+
+
+@dataclass
+class BlazeContext(Generic[T]):
+    """ Context for GraphQL query """
+    user: T
+    request: Any
+    session_id: str
+
 class BlazeConfig:
     """ Top-level configuration """
 
-    def __init__(self, orm_class: Type[Any], auth_class: Type[Authenticator], data_accessor: DataAccessor):
+    def __init__(
+            self,
+            orm_class: Type[Any],
+            auth_class: Type[Authenticator],
+            data_accessor: DataAccessor,
+            context_factory: Callable[[Any], BlazeContext]
+    ):
         self.auth_class = auth_class
         self.data_accessor = data_accessor
         self.orm_class = orm_class
+        self.context_factory = context_factory
 
 
 def _parse_signature(function) -> list[BlazeArg]:
@@ -223,7 +241,7 @@ def _instrument_computed_resolver(resolver: Callable, paginate: bool, filters: l
             filter_sig = _parse_signature(f)
             param_sig.extend(filter_sig)
 
-    async def instrumented_getter(self, field, config: BlazeConfig, **kwargs):
+    async def instrumented_getter(self, field, context: BlazeContext, config: BlazeConfig, **kwargs):
         """ New getter function that extends provided getter logic """
 
         # arguments that are expected by the original resolver
@@ -307,12 +325,21 @@ def preprocess_field(field: BlazeProperty, cls):
     )
 
     def model_to_id_middleware(_field: BlazeProperty, is_list_: bool = False):
-        async def model_to_id_resolver_wrapper(self: AbstractTable, field_value: Any, _field: BlazeProperty, _config: BlazeConfig, **kwargs):
+        async def model_to_id_resolver_wrapper(
+                self: AbstractTable,
+                field_value: Any,
+                _field: BlazeProperty,
+                context: BlazeContext,
+                _config: BlazeConfig,
+                **kwargs
+        ):
             """ Resolver for converting model field to id.
             Wraps actual resolver and turns its return value into object id
 
             :param self: parent model containing this field.
-            :param _field: field object that is being resolved
+            :param _field: field object that is being resolved\
+            :param field_value: value of the field
+            :param context: blaze context
             :param _config: additional shared config
             :param kwargs: additional gql arguments from client
             """
@@ -334,17 +361,23 @@ def preprocess_field(field: BlazeProperty, cls):
 
                 # convert table object to ObjectId
                 elif isinstance(item, (VirtualTable, Table)):
+                    raise ValueError("If this ever happens, I need to add __dependencies__ to returned object id")
                     items.append(item.get_unique_id())
                 else:
                     if not hasattr(item, "id"):
                         raise ValueError(f"Object {item} doesn't have id attribute")
+
+                    table = Table.get_by_orm_model(type(item))
+
+                    assert self.context is not None
+                    deps = table(item, self.context).__dependencies__()
 
                     # convert database object to ObjectId
                     items.append(
                         ObjectId.find(
                             obj_id=item.id,
                             entity=type(item).__name__,
-                            dependencies=[]
+                            dependencies=deps
                         )
                     )
 
@@ -450,7 +483,7 @@ class Serializable:
             # freshly parsed fields are not resolved yet
             field = resolve_erased_args_of_generic(field, cls)
 
-            async def attribute_resolver(self: Serializable, f: BlazeProperty, config: BlazeConfig, **kwargs):
+            async def attribute_resolver(self: Serializable, f: BlazeProperty, context: BlazeContext, config: BlazeConfig, **kwargs):
                 if isinstance(self, Table):
                     return getattr(self.get_model(), f.name)
                 return getattr(self, f.name)
@@ -494,6 +527,7 @@ class Serializable:
             cls,
             __parent: Optional['AbstractTable'],
             __field: Optional[BlazeField],
+            __context: BlazeContext,
             __config: BlazeConfig,
             **extra_args
     ):
@@ -502,6 +536,7 @@ class Serializable:
             :param cls: the class of the model to resolve
             :param __parent: the parent model value. Not necessarily an instance of cls.
             :param __field: the field of the parent model that contains this model
+            :param __context: the context of the request
             :param __config: additional shared configurations
             :param extra_args: additional arguments passed to the resolver
 
@@ -510,7 +545,7 @@ class Serializable:
         raise NotImplementedError
 
     @classmethod
-    async def resolve_with_context(cls, __info, __config: BlazeConfig, **fields) -> tuple['Serializable', dict]:
+    async def resolve_with_context(cls, __info, __config: BlazeConfig, **fields) -> tuple['Serializable', BlazeContext]:
         """ Called when ariadne is resolving a query for this type.
         Always a root resolver for queryable types.
 
@@ -521,17 +556,18 @@ class Serializable:
         :returns: instance of this type
         """
 
-        obj = await cls.resolve(None, None, __config, **fields)
-
         request = __info.context.get("request")
         session_id = __config.auth_class().authenticate(request)
+        __context = __config.context_factory(__info)
 
-        context = {
-            'request': request,
-            'session_id': session_id
-        }
+        # __context = {
+        #     'request': request,
+        #     'session_id': session_id
+        # }
 
-        return obj, context
+        obj = await cls.resolve(None, None, __context, __config, **fields)
+
+        return obj, __context
 
     @classmethod
     def issubclass(cls, model_type):
@@ -552,6 +588,10 @@ class AbstractTable(Serializable):
 
     def get_unique_id(self) -> 'ObjectId':
         raise NotImplementedError
+
+    def __dependencies__(self):
+        """ Get a list of primitives this model depends on. """
+        return []
 
 
 T = TypeVar("T")
@@ -585,18 +625,28 @@ class Table(Generic[T], AbstractTable):
     """ Base class for physical table representation. """
 
     _model_type: Type[T]
+    _model_by_table: dict[str, Type['Table[T]']] = {}
 
-    def __init__(self, model):
+    def __init__(self, model, context: BlazeContext):
+
         if model is None:
             raise ValueError("Model cannot be None in table constructor")
+
         self.__model = model
+        self.context: BlazeContext = context
 
     def get_model(self):
         return self.__model
 
+    @classmethod
+    def get_by_orm_model(cls, model: Type[T]) -> Type['Table[T]']:
+        return cls._model_by_table[model.__name__]
+
     def __init_subclass__(cls) -> None:
         # save model type
         cls._model_type = get_args(cls.__orig_bases__[0])[0]
+        # map database orm model to blaze link table
+        cls._model_by_table[cls._model_type.__name__] = cls
 
     @classmethod
     def get_construct_args(cls) -> List[BlazeArg]:
@@ -612,30 +662,15 @@ class Table(Generic[T], AbstractTable):
             cls,
             __parent,
             __field: Optional[BlazeField],
+            __context: BlazeContext,
             __config: BlazeConfig,
             **args
     ):
         """ Resolve database table row with fields passed from GraphQL. Always receives ObjectID dictionary as args. """
 
-        # no longer substitute self value in table methods with orm model,
-        # sqlalchemy does not like it when I tamper with attributes :(
         model = await __config.data_accessor.get_by_pk(model=cls.get_model_type(), pk=args['identifier'].obj_id)
 
-        # This place looks like shit and probably unreliable and going to break.
-        # TODO: find a better way
-        #
-        # Here I am copying properties from model to table instance.
-        table = cls(model)
-        # for field in cls.get_model_props([]):
-        #
-        #     if hasattr(model, field.name):
-        #         field_type = field.return_type
-        #         field_value = getattr(model, field.name)
-        #         if AbstractTable.issubclass(field_type):
-        #             if field_value is not None:
-        #                 field_value = field_type(field_value)
-        #
-        #         setattr(table, field.name, field_value)
+        table = cls(model, __context)
 
         return table
 
@@ -684,7 +719,7 @@ class VirtualTable(AbstractTable):
         return cls.__name__
 
     @classmethod
-    async def resolve(cls,  __parent, __field: Optional[BlazeField], __config: BlazeConfig, **extra_args):
+    async def resolve(cls,  __parent, __field: Optional[BlazeField], __context: BlazeContext, __config: BlazeConfig, **extra_args):
         identifier = extra_args.get("identifier")
 
         # no idea what this was
@@ -695,7 +730,10 @@ class VirtualTable(AbstractTable):
         #     increase_ref_count=True,
         # )
 
+        # todo: pass context somehow?
         inst = cls(identifier)
+        print("added context to instance", inst)
+        inst.context = __context
         inst.identifier = identifier
         return inst
 
@@ -716,14 +754,19 @@ class Struct(AbstractTable):
         return cls.__name__
 
     @classmethod
-    async def resolve(cls, __parent, __field: Optional[BlazeField], __config: BlazeConfig, **kwargs):
-        return cls(**kwargs)
+    async def resolve(cls, __parent, __field: Optional[BlazeField], __context: BlazeContext, __config: BlazeConfig, **kwargs):
+        # todo: pass context somehow?
+        struct = cls(**kwargs)
+        print("added context to instance", struct)
+        struct.context = __context
+        return struct
 
     def __init__(self, **kwargs):
         self._values = kwargs
 
     def to_dict(self):
         return self._values
+
 
 class GenericModel:
     pass
@@ -794,11 +837,19 @@ class ObjectId(Struct):
         for dep in dependencies:
             dep._dependants.append(self)
 
-    def does_depend(self, identifier):
+    def same_entity(self, other: 'ObjectId'):
+        return self.entity.lower().replace("_", "") == other.entity.lower().replace("_", "")
+
+    def depends_on(self, identifier):
         """ Check if this object id depends on given object id """
 
-        if self.entity == identifier.entity and self.obj_id is None:
+        if self == identifier:
             return True
+
+        # entities match, subscribed to entire table
+        if self.obj_id is None and self.same_entity(identifier):
+            return True
+
         return False
 
     def collect_dependencies(self, ret: list['ObjectId'] = None):
@@ -816,7 +867,7 @@ class ObjectId(Struct):
     def find_dependency(self, name) -> Optional['ObjectId']:
         """ Find dependency by name """
         for dep in self._dependencies:
-            if dep.entity == name:
+            if dep.entity.lower().replace("_", "") == name.lower().replace("_", ""):
                 return dep
 
     @computed
@@ -828,8 +879,12 @@ class ObjectId(Struct):
         """ Check if two ObjectIds are equal.
         They are equal if they have the same id, entity and dependencies (order ignored)
         """
+
+        ent1 = self.entity.lower().replace("_", "")
+        ent2 = other.entity.lower().replace("_", "")
+
         return self.obj_id == other.obj_id and \
-            self.entity == other.entity and \
+            ent1 == ent2 and \
             set(self._dependencies) == set(other._dependencies)
 
     def __hash__(self):
@@ -843,10 +898,18 @@ class ObjectId(Struct):
     def __str__(self):
         return f"<ObjectId id={self.obj_id} ent={self.entity} deps={self._dependencies}>"
 
+    def __repr__(self):
+        return self.__str__()
+
     def get_modifiers(self) -> dict[str, Any]:
         return self._parsed_modifiers
 
-    def dict(self):
+    def dict(self, minimal=False):
+        if minimal:
+            return {
+                "obj_id": self.obj_id,
+                "entity": self.entity,
+            }
         return {
             "obj_id": self.obj_id,
             "entity": self.entity,
@@ -918,6 +981,7 @@ class ComputedField(Serializable):
             parent: Serializable,
             field_value: Any,
             field: BlazeProperty,
+            __context: BlazeContext,
             config: BlazeConfig,
             **extra_args
     ):
@@ -932,7 +996,10 @@ class ComputedField(Serializable):
         }
 
         # Class extending ComputedField must implement __init__ with (self, value, [**kwargs]) signature
-        return cls(field_value, **extra_args)
+        # todo: pass context comehow?
+        inst = cls(field_value, **extra_args)
+        inst.context = __context
+        return inst
 
     @classmethod
     def get_type_name(cls):
@@ -1248,7 +1315,7 @@ class TableManager:
                 # Now we can call callbacks that listen to new model subscriptions
                 if resolving_by_id:
                     for callback in self._on_subscribe_callbacks:
-                        await callback(context['session_id'], fields['identifier'])
+                        await callback(context.session_id, fields['identifier'])
 
                 return resolved
 
@@ -1258,7 +1325,11 @@ class TableManager:
 
             @gql_obj.field(b_prop.name)
             async def test(obj, info, **kwargs):
-                res = b_prop.resolver(obj, b_prop, self.config, **kwargs)
+                # unlike model resolves, here we don't have resolve_with_context method,
+                # so we have to kind of duplicate that to make sure context is passed to the resolver
+
+                context = self.config.context_factory(info)
+                res = b_prop.resolver(obj, b_prop, context, self.config, **kwargs)
                 if asyncio.iscoroutine(res):
                     res = await res
                 return res

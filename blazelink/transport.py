@@ -59,10 +59,20 @@ class StarletteTransport(Transport):
 
         await self.debugger.message_sent(self.session_id, update_id, identifier)
 
+        identifier_dict = None
+
+        if isinstance(identifier, ObjectId):
+            identifier_dict = identifier.dict(minimal=True)
+        else:
+            identifier_dict = {
+                "entity": identifier.entity,
+                "obj_id": identifier.obj_id,
+            }
+
         await self.send_message(
             ModelUpdateEvent(
                 update_type=update_type.name,
-                identifier=identifier.dict()
+                identifier=identifier_dict
             )
         )
         print("Update sent!")

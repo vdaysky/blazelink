@@ -24,7 +24,9 @@ class SubscriptionManager:
 
     def subscribe(self, session_id: str, identifier: ObjectId):
         """ Subscribe given session to given identifier """
+
         self._subscriptions[session_id].append(identifier)
+
 
     def unsubscribe(self, session_id: str, identifier: ObjectId) -> bool:
         """ Unsubscribe given session from given identifier """
@@ -38,17 +40,6 @@ class SubscriptionManager:
         """ Unsubscribe given session from all identifiers """
         self._subscriptions.pop(session_id, None)
 
-    @classmethod
-    def find_dependants(cls, identifier: ObjectId) -> set[ObjectId]:
-        """ Find all identifiers that depend on given identifier """
-
-        dependants = set(identifier._dependants)
-
-        for object_id, ref_count in ObjectId._registry.values():
-            if object_id.does_depend(identifier):
-                dependants.add(object_id)
-
-        return dependants
 
     async def push_raw_update(self, update: Update):
 
@@ -68,7 +59,10 @@ class SubscriptionManager:
         await self.push_recursive_update(update_type[update.kind], obj_id, update.id)
 
     async def push_single_update(self, update_type: UpdateType, identifier: ObjectId, update_id: int):
-        """ Push single update to all subscribers of given identifier
+        """ Push single update to all subscribers of given identifier.
+
+        Will push updates to connections subscribed not only to exact update, but also to all less specific updates
+        (e.g. if update is for Player with ID 1, it will also push updates to subscribers of table Player)
 
         :param update_type: Type of update. Can be Update, Create or Delete
         :param identifier: ObjectId of object that was updated
@@ -82,11 +76,20 @@ class SubscriptionManager:
 
             await self.debugger.record_connection_check(conn_id, update_id)
 
-            if identifier in identifiers:
+            found_match = False
+
+            for subscribed_identifier in identifiers:
+
+                if subscribed_identifier.depends_on(identifier):
+                    found_match = True
+                    break
+
+            if found_match:
 
                 await self.debugger.record_subscription_found(conn_id, update_id, identifier)
 
                 connection = self.conns.get_connection(conn_id)
+
                 if not connection:
                     to_delete.add(conn_id)
                     logging.warning(f"Connection for session {conn_id} not found")
@@ -120,6 +123,6 @@ class SubscriptionManager:
 
         await self.push_single_update(update_type, identifier, update_id)
 
-        for dependant in self.find_dependants(identifier):
-            await self.push_recursive_update(UpdateType.Dependency, dependant, update_id, seen=seen)
+        # for dependant in self.find_dependants(identifier):
+        #     await self.push_recursive_update(UpdateType.Dependency, dependant, update_id, seen=seen)
 

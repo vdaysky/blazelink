@@ -374,7 +374,7 @@ def preprocess_field(field: BlazeProperty, cls):
 
                     # convert database object to ObjectId
                     items.append(
-                        ObjectId.find(
+                        ObjectId(
                             obj_id=item.id,
                             entity=type(item).__name__,
                             dependencies=deps
@@ -688,11 +688,10 @@ class Table(Generic[T], AbstractTable):
         return n
 
     def get_unique_id(self) -> 'ObjectId':
-        return ObjectId.find(
+        return ObjectId(
             obj_id=self.get_model().id,
             entity=self.get_type_name(),
             dependencies=[],
-            increase_ref_count=False,
         )
 
 
@@ -732,7 +731,6 @@ class VirtualTable(AbstractTable):
 
         # todo: pass context somehow?
         inst = cls(identifier)
-        print("added context to instance", inst)
         inst.context = __context
         inst.identifier = identifier
         return inst
@@ -757,7 +755,6 @@ class Struct(AbstractTable):
     async def resolve(cls, __parent, __field: Optional[BlazeField], __context: BlazeContext, __config: BlazeConfig, **kwargs):
         # todo: pass context somehow?
         struct = cls(**kwargs)
-        print("added context to instance", struct)
         struct.context = __context
         return struct
 
@@ -782,23 +779,7 @@ class ObjectId(Struct):
     obj_id: int
     entity: str
     modifiers: str
-
-    # static property that keeps track of ObjectId instances
-    # that are being tracked and ref count
-    _registry: dict[int, tuple['ObjectId', int]] = {}
-
-    @classmethod
-    def __get_validators__(cls):
-        yield cls._validator
-
-    @classmethod
-    def _validator(cls, v):
-        return ObjectId(
-            obj_id=v.get('obj_id'),
-            entity=v.get('entity'),
-            modifiers=v.get('modifiers'),
-            dependencies=[cls._validator(d) for d in v.get('dependencies', [])]
-        )
+    dependencies: list[ForwardRef('ObjectId')]
 
     def __init__(
             self,
@@ -828,14 +809,7 @@ class ObjectId(Struct):
         if not dependencies:
             dependencies = []
 
-        self._dependencies: list[ObjectId] = dependencies
-
-        # objects depending on this object
-        self._dependants: list[ObjectId] = []
-
-        # keep two-way connection
-        for dep in dependencies:
-            dep._dependants.append(self)
+        self.dependencies: list[ObjectId] = dependencies
 
     def same_entity(self, other: 'ObjectId'):
         return self.entity.lower().replace("_", "") == other.entity.lower().replace("_", "")
@@ -852,28 +826,11 @@ class ObjectId(Struct):
 
         return False
 
-    def collect_dependencies(self, ret: list['ObjectId'] = None):
-        """ Flatten all dependencies into single list """
-        if ret is None:
-            ret = []
-
-        for dep in self._dependencies:
-            if dep not in ret:
-                ret.append(dep)
-                dep.collect_dependencies(ret)
-
-        return ret
-
     def find_dependency(self, name) -> Optional['ObjectId']:
         """ Find dependency by name """
-        for dep in self._dependencies:
+        for dep in self.dependencies:
             if dep.entity.lower().replace("_", "") == name.lower().replace("_", ""):
                 return dep
-
-    @computed
-    def dependencies(self, *args, **kwargs) -> List['ObjectId']:
-        """ Return flat list of dependencies for this object. """
-        return self.collect_dependencies()
 
     def __eq__(self, other):
         """ Check if two ObjectIds are equal.
@@ -885,18 +842,17 @@ class ObjectId(Struct):
 
         return self.obj_id == other.obj_id and \
             ent1 == ent2 and \
-            set(self._dependencies) == set(other._dependencies)
+            set(self.dependencies) == set(other.dependencies)
 
     def __hash__(self):
         res = 0
-        for dep in self._dependencies:
+        for dep in self.dependencies:
             res ^= dep.__hash__()
 
-        repr = f"{self.obj_id}-{self.entity}-{res}"
-        return repr.__hash__()
+        return f"{self.obj_id}-{self.entity}-{res}".__hash__()
 
     def __str__(self):
-        return f"<ObjectId id={self.obj_id} ent={self.entity} deps={self._dependencies}>"
+        return f"<ObjectId id={self.obj_id} ent={self.entity} deps={self.dependencies}>"
 
     def __repr__(self):
         return self.__str__()
@@ -914,7 +870,7 @@ class ObjectId(Struct):
             "obj_id": self.obj_id,
             "entity": self.entity,
             "modifiers": self.modifiers,
-            "dependencies": [dep.dict() for dep in self._dependencies]
+            "dependencies": [dep.dict() for dep in self.dependencies]
         }
 
     @classmethod
@@ -929,33 +885,6 @@ class ObjectId(Struct):
             entity=data.get('entity'),
             dependencies=deps
         )
-
-        id_hash = hash(new)
-
-        if id_hash in cls._registry:
-            existing, count = cls._registry[id_hash]
-            cls._registry[id_hash] = existing, count + 1
-            return existing
-
-        cls._registry[id_hash] = new, 1
-        return new
-
-    @classmethod
-    def find(cls, obj_id, entity, dependencies=None, increase_ref_count=False) -> 'ObjectId':
-        """ Find existing ObjectId instance in the registry. """
-        if dependencies is None:
-            dependencies = []
-
-        new = ObjectId(obj_id=obj_id, entity=entity, dependencies=dependencies)
-        id_hash = hash(new)
-
-        if id_hash in cls._registry:
-            existing, ref_count = cls._registry[id_hash]
-            if increase_ref_count:
-                cls._registry[id_hash] = existing, ref_count + 1
-
-            return existing
-
         return new
 
 
@@ -1291,6 +1220,7 @@ class TableManager:
                     resolving_by_id = True
 
                     data = fields['identifier']
+                    print("Parsing object id", data)
 
                     # make sure entry on requested object is set and valid
                     if data.get('entity') is not None:
@@ -1305,6 +1235,8 @@ class TableManager:
                     # parse object id and replace raw data with it.
                     # do we want to only have object id as argument type always?
                     fields['identifier'] = obj_id
+
+                    print("Parsed object id", obj_id)
 
                 resolved, context = await model_type.resolve_with_context(
                     info,

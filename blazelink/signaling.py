@@ -39,6 +39,8 @@ class Signaler:
         async for message in read_events(self.db_host, self.db_port, self.db_name, self.db_user, self.db_password):
             data = json.loads(message.payload)
 
+            print("Replication message:", data)
+
             changes = data['change']
 
             for change in changes:
@@ -68,7 +70,7 @@ class Signaler:
                 try:
                     update_id = random.randint(0, 1000000000)
                     update = Update(update_id, kind, table, pk, data)
-
+                    print("Update:", update)
                     await self.debugger.log_update(update)
 
                     await self.subs.push_raw_update(update)

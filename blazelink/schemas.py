@@ -27,3 +27,4 @@ class PingInEvent(BaseModel):
 class ModelUpdateEvent(BaseModel):
     update_type: str
     identifier: dict
+    changes: dict | None

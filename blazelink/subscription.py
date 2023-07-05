@@ -56,9 +56,9 @@ class SubscriptionManager:
             'delete': UpdateType.Delete
         }
 
-        await self.push_recursive_update(update_type[update.kind], obj_id, update.id)
+        await self.push_recursive_update(update_type[update.kind], obj_id, update.data, update.id)
 
-    async def push_single_update(self, update_type: UpdateType, identifier: ObjectId, update_id: int):
+    async def push_single_update(self, update_type: UpdateType, identifier: ObjectId, changes: dict, update_id: int):
         """ Push single update to all subscribers of given identifier.
 
         Will push updates to connections subscribed not only to exact update, but also to all less specific updates
@@ -67,9 +67,10 @@ class SubscriptionManager:
         :param update_type: Type of update. Can be Update, Create or Delete
         :param identifier: ObjectId of object that was updated
         :param update_id: ID of update for debug
+        :param changes: mapping of column to its new value
         """
 
-        print("[Push Single update]", update_type, identifier)
+        print("[Push Single update]", update_type, identifier, changes)
         to_delete = set()
 
         for conn_id, identifiers in {**self._subscriptions}.items():
@@ -95,7 +96,7 @@ class SubscriptionManager:
                     logging.warning(f"Connection for session {conn_id} not found")
                     continue
 
-                await connection.push_update(update_type, identifier, update_id)
+                await connection.push_update(update_type, identifier, changes, update_id)
 
             else:
                 await self.debugger.record_subscription_not_found(conn_id, update_id, identifier)
@@ -104,7 +105,7 @@ class SubscriptionManager:
             await self.debugger.record_subscription_deleted(key, update_id)
             self._subscriptions.pop(key)
 
-    async def push_recursive_update(self, update_type: UpdateType, identifier: ObjectId, update_id: int, seen: set[ObjectId] = None):
+    async def push_recursive_update(self, update_type: UpdateType, identifier: ObjectId, changes: dict, update_id: int, seen: set[ObjectId] = None):
         """ Push update to all subscribers of given identifier and all subscribers of entities depending on this object
 
         :param update_type: Type of update. Can be Update, Create or Delete
@@ -121,7 +122,7 @@ class SubscriptionManager:
 
         seen.add(identifier)
 
-        await self.push_single_update(update_type, identifier, update_id)
+        await self.push_single_update(update_type, identifier, changes, update_id)
 
         # for dependant in self.find_dependants(identifier):
         #     await self.push_recursive_update(UpdateType.Dependency, dependant, update_id, seen=seen)

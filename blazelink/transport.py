@@ -28,7 +28,7 @@ class Transport:
     def get_session_id(self) -> str:
         raise NotImplementedError()
 
-    async def push_update(self, update_type: UpdateType, identifier: ObjectId, update_id: int):
+    async def push_update(self, update_type: UpdateType, identifier: ObjectId, changes: dict, update_id: int):
         raise NotImplementedError()
 
     async def send_message(self, message: BaseModel, msg_id: int = None, blocking=True):
@@ -54,7 +54,7 @@ class StarletteTransport(Transport):
         self._on_authorize_handlers.append(func)
         return func
 
-    async def push_update(self, update_type: UpdateType, identifier: ObjectId, update_id: int):
+    async def push_update(self, update_type: UpdateType, identifier: ObjectId, changes: dict, update_id: int):
         print("Sending update...", update_type, identifier)
 
         await self.debugger.message_sent(self.session_id, update_id, identifier)
@@ -72,7 +72,8 @@ class StarletteTransport(Transport):
         await self.send_message(
             ModelUpdateEvent(
                 update_type=update_type.name,
-                identifier=identifier_dict
+                identifier=identifier_dict,
+                changes=changes,
             )
         )
         print("Update sent!")

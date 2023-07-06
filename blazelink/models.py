@@ -8,6 +8,7 @@ from typing import TypeVar, Generic, List, get_args, Type, Optional, Union, Call
     Coroutine, get_origin
 
 from ariadne import ObjectType, QueryType
+from graphql import FieldNode, InlineFragmentNode, FragmentSpreadNode
 from pydantic import BaseModel
 
 from blazelink.utils import is_optional, get_optional_arg, is_generic, resolve_refs, is_list, get_list_type, has_erased_arg, \
@@ -126,10 +127,10 @@ class Authenticator:
 
 class DataAccessor:
 
-    async def get_by_pk(self, model: Type[Any], pk: Any) -> Any:
+    async def get_by_pk(self, context: 'BlazeContext', model: Type[Any], pk: Any) -> Any:
         raise NotImplementedError()
 
-    async def execute_query(self, query: ScalarQuery | ListQuery) -> Any:
+    async def execute_query(self, context: 'BlazeContext', query: ScalarQuery | ListQuery) -> Any:
         raise NotImplementedError()
 
 
@@ -142,6 +143,8 @@ class BlazeContext(Generic[T]):
     user: T
     request: Any
     session_id: str
+    session: Any
+
 
 class BlazeConfig:
     """ Top-level configuration """
@@ -258,7 +261,7 @@ def _instrument_computed_resolver(resolver: Callable, paginate: bool, filters: l
             resolved_value = await resolved_value
 
         if isinstance(resolved_value, GenericQueryContainer):
-            resolved_value = await config.data_accessor.execute_query(resolved_value)
+            resolved_value = await config.data_accessor.execute_query(context, resolved_value)
 
         return resolved_value
 
@@ -545,7 +548,7 @@ class Serializable:
         raise NotImplementedError
 
     @classmethod
-    async def resolve_with_context(cls, __info, __config: BlazeConfig, **fields) -> tuple['Serializable', BlazeContext]:
+    async def resolve_with_context(cls, __info, __config: BlazeConfig, __context: BlazeContext, **fields) -> tuple['Serializable', BlazeContext]:
         """ Called when ariadne is resolving a query for this type.
         Always a root resolver for queryable types.
 
@@ -556,18 +559,17 @@ class Serializable:
         :returns: instance of this type
         """
 
-        request = __info.context.get("request")
-        session_id = __config.auth_class().authenticate(request)
-        __context = __config.context_factory(__info)
+
 
         # __context = {
         #     'request': request,
         #     'session_id': session_id
         # }
 
+
         obj = await cls.resolve(None, None, __context, __config, **fields)
 
-        return obj, __context
+        return obj
 
     @classmethod
     def issubclass(cls, model_type):
@@ -592,6 +594,9 @@ class AbstractTable(Serializable):
     def __dependencies__(self):
         """ Get a list of primitives this model depends on. """
         return []
+
+    def to_dict(self):
+        raise NotImplementedError
 
 
 T = TypeVar("T")
@@ -635,6 +640,10 @@ class Table(Generic[T], AbstractTable):
         self.__model = model
         self.context: BlazeContext = context
 
+        # stores recursively resolved value of this model,
+        # that matches the request
+        self._resolved_values = {}
+
     def get_model(self):
         return self.__model
 
@@ -657,6 +666,9 @@ class Table(Generic[T], AbstractTable):
             required=True
         )]
 
+    def to_dict(self):
+        return self._resolved_values
+
     @classmethod
     async def resolve(
             cls,
@@ -668,7 +680,7 @@ class Table(Generic[T], AbstractTable):
     ):
         """ Resolve database table row with fields passed from GraphQL. Always receives ObjectID dictionary as args. """
 
-        model = await __config.data_accessor.get_by_pk(model=cls.get_model_type(), pk=args['identifier'].obj_id)
+        model = await __config.data_accessor.get_by_pk(__context, model=cls.get_model_type(), pk=args['identifier'].obj_id)
 
         table = cls(model, __context)
 
@@ -730,7 +742,7 @@ class VirtualTable(AbstractTable):
         # )
 
         # todo: pass context somehow?
-        inst = cls(identifier)
+        inst = cls(identifier, __context)
         inst.context = __context
         inst.identifier = identifier
         return inst
@@ -1211,9 +1223,9 @@ class TableManager:
         # Oh, no! python's closures are broken!
         def make_getter_resolver(model_type: Type[AbstractTable]):
             """ This function will create resolvers from top level models defined on query. """
-            dec = query.field(model_type.getter_name())
 
-            async def resolve_thing(_, info, **fields):
+            @query.field(model_type.getter_name())
+            async def query_item_resolver(_, info, **fields):
 
                 resolving_by_id: bool = False
                 if 'identifier' in fields:
@@ -1236,11 +1248,12 @@ class TableManager:
                     # do we want to only have object id as argument type always?
                     fields['identifier'] = obj_id
 
-                    print("Parsed object id", obj_id)
+                context = self.config.context_factory(info)
 
-                resolved, context = await model_type.resolve_with_context(
+                resolved = await model_type.resolve_with_context(
                     info,
                     self.config,
+                    context,
                     **fields
                 )
 
@@ -1250,8 +1263,6 @@ class TableManager:
                         await callback(context.session_id, fields['identifier'])
 
                 return resolved
-
-            dec(resolve_thing)
 
         def make_computed_prop_resolver(gql_obj, b_prop: BlazeProperty):
 

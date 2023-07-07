@@ -43,7 +43,8 @@ Under the hood graphql is used to query and transport data. Server uses ariadne 
 
 ## Prerequisites
 
-Logical replication has to be enabled for target database. Process described [here](https://www.digitalocean.com/community/tutorials/how-to-set-up-logical-replication-with-postgresql-10-on-ubuntu-18-04).
+* Python web-server (python >= 3.10)
+* Logical replication has to be enabled for target database. Process described [here](https://www.digitalocean.com/community/tutorials/how-to-set-up-logical-replication-with-postgresql-10-on-ubuntu-18-04).
 
 ## Modules
 

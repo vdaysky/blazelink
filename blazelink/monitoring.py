@@ -126,13 +126,3 @@ async def read_events(host, port, database, user, password, slot_name) -> AsyncG
             message.cursor.send_feedback(flush_lsn=message.data_start)
 
             yield message
-
-
-async def test():
-    message: ReplicationMessage
-    async for message in read_events(host="127.0.0.1", port=5432, user="vova", password=1, database="blazelink"):
-        print(json.loads(message.payload))
-
-
-if __name__ == '__main__':
-    asyncio.get_event_loop().run_until_complete(test())

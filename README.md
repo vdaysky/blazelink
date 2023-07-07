@@ -20,6 +20,10 @@ with this framework as well, as long as you implement a certain interface, descr
 
 It uses PostgreSQL as a database with enabled logical replication to produce WALs.
 
+## Prerequisites
+
+Logical replication has to be enabled for target database. Process described [here](https://www.digitalocean.com/community/tutorials/how-to-set-up-logical-replication-with-postgresql-10-on-ubuntu-18-04).
+
 ## Modules
 
 <img src="assets/services.png">

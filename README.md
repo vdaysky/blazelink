@@ -5,9 +5,7 @@
 Blazelink allows you to write declarative code that removes the need to make countless GET calls or implement websocket 
 messaging to keep client state up to date.
 
-<video width="100%" controls>
-  <source src="https://www.youtube.com/watch?v=BS2sfcRPxFM" type="video/mp4">
-</video> 
+[<img src="assets/preview.png" />](https://www.youtube.com/watch?v=BS2sfcRPxFM)
 
 ## Technologies
 

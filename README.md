@@ -11,6 +11,25 @@
 Blazelink allows you to write declarative code that removes the need to make countless GET calls or implement websocket 
 messaging to keep client state up to date.
 
+Once framework is integrated with whatever you use for web-server and frontend, there would be only two steps
+to start using it:
+
+* Declare server-side models/views with resolvers
+* Declare same models on client side
+
+After that you can query models and if everything set up correctly, your Vue app or whatever will refresh on its own
+once something accessed the database and updated your precious data. No manual work whatsoever. Simply declare and use.
+
+General algorithm is something like this:
+
+* Client makes graphql request to model.
+* Server remembers what client requested, and now we call it a subscription.
+* Once Changes affecting row in database that some subscription depends on are detected, 
+id of that row and some additional data is sent to the client.
+* Client receives the id and data and figures out, which models exactly should be refreshed.
+* Client makes graphql requests for models that need to be refreshed.
+* Models are reactive, meaning once refresh occurs - all components that use that model will be updated.
+
 [<img src="assets/preview.png" />](https://www.youtube.com/watch?v=BS2sfcRPxFM)
 
 ## Technologies
@@ -19,6 +38,8 @@ Blazelink backend is functioning as an asgi application and can be mounted to an
 with this framework as well, as long as you implement a certain interface, described below.
 
 It uses PostgreSQL as a database with enabled logical replication to produce WALs.
+
+Under the hood graphql is used to query and transport data. Server uses ariadne implementation.
 
 ## Prerequisites
 

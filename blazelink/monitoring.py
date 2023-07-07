@@ -8,8 +8,6 @@ import psycopg2
 from psycopg2.extras import LogicalReplicationConnection, ReplicationCursor, ReplicationMessage
 from psycopg2.extensions import connection
 
-REPLICATION_SLOT = "betterms"
-
 
 async def connection_ready(conn: connection) -> None:
 
@@ -66,19 +64,10 @@ REPLICATION_OPTIONS: dict[str, str] = {
 }
 
 
-async def _create_replication_slot_if_not_exists(cursor: ReplicationCursor, override=False) -> None:
-    """Helper function to create a replication slot if it doesn't exist.
-    The replication slot is a feature in PostgreSQL that ensures that
-    the master server will retain the WALs (Write-Ahead Log)s.
-    In PostgreSQL, the WAL is also known as transaction log.
-    A log is a record of all the events or changes and WAL data
-    is just a description of changes made to the actual data.
-    Args:
-        cursor: The cursor object to execute the queries.
-    """
-    # Query the pg_replication_slots view to check if the replication slot exists
+async def ensure_slot_exists(cursor: ReplicationCursor, slot_name, override=False) -> None:
+
     cursor.execute(
-        f"SELECT slot_name FROM pg_replication_slots WHERE slot_name = '{REPLICATION_SLOT}';"
+        f"SELECT slot_name FROM pg_replication_slots WHERE slot_name = '{slot_name}';"
     )
 
     # Wait for the result of the query to be ready
@@ -87,18 +76,18 @@ async def _create_replication_slot_if_not_exists(cursor: ReplicationCursor, over
     slot_exists: bool = cursor.fetchone() is not None
 
     if slot_exists and override:
-        cursor.drop_replication_slot(REPLICATION_SLOT)
+        cursor.drop_replication_slot(slot_name)
         slot_exists = False
 
     if not slot_exists:
         cursor.create_replication_slot(
-            REPLICATION_SLOT, output_plugin="wal2json"
+            slot_name, output_plugin="wal2json"
         )
 
     await connection_ready(cursor.connection)
 
 
-async def read_events(host, port, database, user, password) -> AsyncGenerator[str, None]:
+async def read_events(host, port, database, user, password, slot_name) -> AsyncGenerator[str, None]:
 
     conn: connection = psycopg2.connect(
         host=host,
@@ -115,10 +104,11 @@ async def read_events(host, port, database, user, password) -> AsyncGenerator[st
     _cursor: ReplicationCursor
 
     with conn.cursor() as _cursor:
-        await _create_replication_slot_if_not_exists(_cursor)
+
+        await ensure_slot_exists(_cursor, slot_name)
 
         _cursor.start_replication(
-            slot_name=REPLICATION_SLOT,
+            slot_name=slot_name,
             decode=True,
             options=REPLICATION_OPTIONS,
         )

@@ -24,19 +24,19 @@ class Update:
 
 class Signaler:
 
-    def __init__(self, subs: SubscriptionManager, data_accessor, db_host, db_port, db_name, db_user, db_password, debugger: Debugger):
+    def __init__(self, subs: SubscriptionManager, db_host, db_port, db_name, db_user, db_password, slot_name: str, debugger: Debugger):
         self.db_host = db_host
         self.db_port = db_port
         self.db_name = db_name
         self.db_user = db_user
         self.db_password = db_password
         self.subs = subs
-        self.data_accessor = data_accessor
         self.debugger = debugger
+        self.slot_name = slot_name
 
     async def start(self):
         message: ReplicationMessage
-        async for message in read_events(self.db_host, self.db_port, self.db_name, self.db_user, self.db_password):
+        async for message in read_events(self.db_host, self.db_port, self.db_name, self.db_user, self.db_password, self.slot_name):
             data = json.loads(message.payload)
 
             print("Replication message:", data)

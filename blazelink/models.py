@@ -8,8 +8,6 @@ from typing import TypeVar, Generic, List, get_args, Type, Optional, Union, Call
     Coroutine, get_origin
 
 from ariadne import ObjectType, QueryType
-from graphql import FieldNode, InlineFragmentNode, FragmentSpreadNode
-from pydantic import BaseModel
 
 from blazelink.utils import is_optional, get_optional_arg, is_generic, resolve_refs, is_list, get_list_type, has_erased_arg, \
     FakeGeneric
@@ -130,7 +128,7 @@ class DataAccessor:
     async def get_by_pk(self, context: 'BlazeContext', model: Type[Any], pk: Any) -> Any:
         raise NotImplementedError()
 
-    async def execute_query(self, context: 'BlazeContext', query: ScalarQuery | ListQuery) -> Any:
+    async def execute_query(self, context: 'BlazeContext', query: GenericQueryContainer) -> Any:
         raise NotImplementedError()
 
 
@@ -152,11 +150,9 @@ class BlazeConfig:
     def __init__(
             self,
             orm_class: Type[Any],
-            auth_class: Type[Authenticator],
             data_accessor: DataAccessor,
             context_factory: Callable[[Any], BlazeContext]
     ):
-        self.auth_class = auth_class
         self.data_accessor = data_accessor
         self.orm_class = orm_class
         self.context_factory = context_factory
@@ -231,7 +227,7 @@ def _instrument_computed_resolver(resolver: Callable, paginate: bool, filters: l
     if paginate:
         assert is_generic(return_type), f"Return type must be either list query or list, got {return_type} ({type(return_type)})"
         list_of = return_type.__args__[0]
-        return_type: Page = Page[list_of]
+        return_type: Type[Page] = Page[list_of]
 
         # page and size here
         param_sig.extend(
@@ -1001,6 +997,7 @@ class TableManager:
 
     def on_subscribe(self, callback):
         self._on_subscribe_callbacks.append(callback)
+        return callback
 
     def is_orm_class(self, cls: Type) -> bool:
         return isinstance(cls, type) and issubclass(cls, self.config.orm_class)
@@ -1232,7 +1229,6 @@ class TableManager:
                     resolving_by_id = True
 
                     data = fields['identifier']
-                    print("Parsing object id", data)
 
                     # make sure entry on requested object is set and valid
                     if data.get('entity') is not None:

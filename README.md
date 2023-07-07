@@ -1,4 +1,10 @@
-# Blazelink
+# Blazelink (POC)
+
+[![State-of-the-art Shitcode](https://img.shields.io/static/v1?label=State-of-the-art&message=Shitcode&color=7B5804)](https://github.com/trekhleb/state-of-the-art-shitcode)
+
+## ⚠️ Disclaimer: Early-early not work look shit ⚠️
+
+---
 
 ## A realtime event-driven client-server data synchronization framework
 

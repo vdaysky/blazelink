@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from psycopg2.extras import ReplicationMessage
 
+from blazelink import TableManager
 from blazelink.debugger import Debugger
 from blazelink.monitoring import read_events
 from blazelink.subscription import SubscriptionManager
@@ -24,12 +25,13 @@ class Update:
 
 class Signaler:
 
-    def __init__(self, subs: SubscriptionManager, db_host, db_port, db_name, db_user, db_password, slot_name: str, debugger: Debugger):
+    def __init__(self, subs: SubscriptionManager, table_manager: TableManager, db_host, db_port, db_name, db_user, db_password, slot_name: str, debugger: Debugger):
         self.db_host = db_host
         self.db_port = db_port
         self.db_name = db_name
         self.db_user = db_user
         self.db_password = db_password
+        self.table_manager = table_manager
         self.subs = subs
         self.debugger = debugger
         self.slot_name = slot_name
@@ -69,6 +71,24 @@ class Signaler:
 
                 try:
                     update_id = random.randint(0, 1000000000)
+
+                    # sanitize data by only including fields present on the model
+                    if data:
+                        for model in self.table_manager.models:
+
+                            model_name = model.get_type_name().replace("_", "").lower()
+                            table_name = table.replace("_", "").lower()
+
+                            if model_name == table_name:
+                                fields = model.get_model_props(self.table_manager.models)
+                                explicit_field_set = set([f.name for f in fields])
+                                clear_data = {}
+                                for key in data:
+                                    if key in explicit_field_set:
+                                        clear_data[key] = data[key]
+                                data = clear_data
+                                break
+
                     update = Update(update_id, kind, table, pk, data)
                     print("Update:", update)
                     await self.debugger.log_update(update)

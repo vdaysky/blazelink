@@ -204,71 +204,6 @@ def _get_return_type(function) -> Type:
     return return_type
 
 
-def _instrument_computed_resolver(resolver: Callable, paginate: bool, filters: list[Callable]):
-    """ Instrument resolver function for computed property with options to paginate results and apply filters
-    After that, resolver will have _prop_meta attribute, containing all information about that resolver
-
-    :param resolver: resolver function
-    :param paginate: if True, will add pagination arguments to resolver
-    :param filters: list of filter functions
-    """
-
-    # get args needed by raw computed prop itself
-    sig = inspect.signature(resolver)
-
-    return_type = sig.return_annotation
-
-    if return_type == inspect.Parameter.empty:
-        raise ValueError("Computed property must have return type annotation")
-
-    param_sig = _parse_signature(resolver)
-
-    # wrap type into page and update signature with new args
-    if paginate:
-        assert is_generic(return_type), f"Return type must be either list query or list, got {return_type} ({type(return_type)})"
-        list_of = return_type.__args__[0]
-        return_type: Type[Page] = Page[list_of]
-
-        # page and size here
-        param_sig.extend(
-            return_type.get_construct_args()
-        )
-
-    # add filter props if needed
-    if filters:
-        for f in filters:
-            filter_sig = _parse_signature(f)
-            param_sig.extend(filter_sig)
-
-    async def instrumented_getter(self, field, context: BlazeContext, config: BlazeConfig, **kwargs):
-        """ New getter function that extends provided getter logic """
-
-        # arguments that are expected by the original resolver
-        resolver_args = {}
-
-        for param in _parse_signature(resolver):
-            if param.name in kwargs:
-                resolver_args[param.name] = kwargs[param.name]
-
-        # call original resolver
-        resolved_value = resolver(self, **resolver_args)
-
-        if asyncio.iscoroutine(resolved_value):
-            resolved_value = await resolved_value
-
-        if isinstance(resolved_value, GenericQueryContainer):
-            resolved_value = await config.data_accessor.execute_query(context, resolved_value)
-
-        return resolved_value
-
-    resolver._prop_meta = BlazeProperty(
-        name=resolver.__name__,
-        getter=instrumented_getter,
-        signature=param_sig,
-        return_type=return_type
-    )
-
-
 def parse_class_fields(cls: Type) -> list[BlazeField]:
     fields = []
     for name, field_type in get_type_hints(cls).items():
@@ -298,22 +233,6 @@ def parse_class_fields(cls: Type) -> list[BlazeField]:
         )
 
     return fields
-
-
-def computed(method=None, *, paginate=False, filters: List[Callable] = None):
-    """ Decorator for marking computed properties. Those will be collected and added to the schema. """
-
-    # called as function
-    if not method:
-        def real_decorator(method):
-            _instrument_computed_resolver(method, paginate, filters)
-            return method
-
-        return real_decorator
-
-    # called as decorator
-    _instrument_computed_resolver(method, paginate, filters)
-    return method
 
 
 def preprocess_field(field: BlazeProperty, cls):
@@ -964,7 +883,7 @@ class Page(Generic[_PageItem], ComputedField):
         cls.set_generic_arg(_PageItem, arg)
 
     def __init__(self, value, page: int = 0, size: int = 10):
-        print("Page", page, "size", size)
+
         items = value[size * page:size * (page + 1)]
         self.items = items
         self.count = len(value)
@@ -1415,3 +1334,89 @@ class TableManager:
             return self.py_to_gql(generic_arg, input=input, field_owner=None)
 
         raise ValueError(f"Unknown type {generic_arg} {type(generic_arg)}")
+
+    def _instrument_computed_resolver(self, resolver: Callable, paginate: bool, filters: list[Callable]):
+        """ Instrument resolver function for computed property with options to paginate results and apply filters
+        After that, resolver will have _prop_meta attribute, containing all information about that resolver
+
+        :param resolver: resolver function
+        :param paginate: if True, will add pagination arguments to resolver
+        :param filters: list of filter functions
+        """
+
+        # get args needed by raw computed prop itself
+        sig = inspect.signature(resolver)
+
+        return_type = sig.return_annotation
+
+        if return_type == inspect.Parameter.empty:
+            raise ValueError("Computed property must have return type annotation")
+
+        param_sig = _parse_signature(resolver)
+
+        # wrap type into page and update signature with new args
+        if paginate:
+            return_type = resolve_refs(return_type, {**locals(), **{model.__name__ : model for model in self.models}}, globals(), set())
+            assert is_generic(
+                return_type), f"Return type must be either list query or list, got {return_type} ({type(return_type)})"
+            list_of = return_type.__args__[0]
+            return_type: Type[Page] = Page[list_of]
+
+            # page and size here
+            # NO, NO, NO. this is a computed field, all computed fields
+            # get their construct args added at prop preprocessing stage.
+            # param_sig.extend(
+            #     return_type.get_construct_args()
+            # )
+
+        # add filter props if needed
+        if filters:
+            for f in filters:
+                filter_sig = _parse_signature(f)
+                param_sig.extend(filter_sig)
+
+        async def instrumented_getter(self, field, context: BlazeContext, config: BlazeConfig, **kwargs):
+            """ New getter function that extends provided getter logic """
+
+            # arguments that are expected by the original resolver
+            # some of the arguments might be meant for computed fields
+            # so we have to filter out and pass only required ones
+            resolver_args = {}
+
+            func_args = inspect.signature(resolver).parameters.keys()
+            for param in func_args:
+                if param in kwargs:
+                    resolver_args[param] = kwargs[param]
+
+            # call original resolver
+            resolved_value = resolver(self, **resolver_args)
+
+            if asyncio.iscoroutine(resolved_value):
+                resolved_value = await resolved_value
+
+            if isinstance(resolved_value, GenericQueryContainer):
+                resolved_value = await config.data_accessor.execute_query(context, resolved_value)
+
+            return resolved_value
+
+        resolver._prop_meta = BlazeProperty(
+            name=resolver.__name__,
+            getter=instrumented_getter,
+            signature=param_sig,
+            return_type=return_type
+        )
+
+    def computed(self, method=None, *, paginate=False, filters: List[Callable] = None):
+        """ Decorator for marking computed properties. Those will be collected and added to the schema. """
+
+        # called as function
+        if not method:
+            def real_decorator(method):
+                self._instrument_computed_resolver(method, paginate, filters)
+                return method
+
+            return real_decorator
+
+        # called as decorator
+        self._instrument_computed_resolver(method, paginate, filters)
+        return method
